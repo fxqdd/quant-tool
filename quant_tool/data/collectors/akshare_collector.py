@@ -8,15 +8,53 @@ import pandas as pd
 from typing import Optional, List, Dict
 from datetime import datetime
 import sys
+import time
+import os
 sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
 from config import CACHE_DIR
 
 
 class AkShareCollector:
-    """AkShare数据收集器"""
+    """AkShare数据收集器（带重试机制）"""
 
-    def __init__(self, cache_dir=CACHE_DIR):
+    def __init__(self, cache_dir=CACHE_DIR, max_retries=3, retry_delay=2):
         self.cache_dir = cache_dir
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    def _retry_request(self, func, *args, **kwargs):
+        """带重试的请求"""
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    print(f"[Collector] 请求失败，{self.retry_delay}秒后重试 ({attempt+1}/{self.max_retries})...")
+                    time.sleep(self.retry_delay)
+                else:
+                    print(f"[Collector] 请求最终失败: {e}")
+        raise last_error
+
+    def _get_cache_path(self, stock_code: str, data_type: str) -> str:
+        """获取缓存文件路径"""
+        return os.path.join(self.cache_dir, f"{stock_code}_{data_type}.csv")
+
+    def _save_to_cache(self, df: pd.DataFrame, stock_code: str, data_type: str):
+        """保存数据到缓存"""
+        if df is not None and len(df) > 0:
+            cache_path = self._get_cache_path(stock_code, data_type)
+            df.to_csv(cache_path, index=False)
+            print(f"[Collector] 数据已缓存: {cache_path}")
+
+    def _load_from_cache(self, stock_code: str, data_type: str) -> Optional[pd.DataFrame]:
+        """从缓存加载数据"""
+        cache_path = self._get_cache_path(stock_code, data_type)
+        if os.path.exists(cache_path):
+            print(f"[Collector] 从缓存加载: {cache_path}")
+            return pd.read_csv(cache_path)
+        return None
 
     def get_realtime_quotes(self, stock_codes: Optional[List[str]] = None) -> pd.DataFrame:
         """
@@ -37,28 +75,48 @@ class AkShareCollector:
         start_date: str = "20240101",
         end_date: str = "20260331",
         period: str = "daily",
-        adjust: str = "qfq"
+        adjust: str = "qfq",
+        use_cache: bool = True
     ) -> pd.DataFrame:
         """
-        获取历史K线数据
-        
-        Args:
-            stock_code: 股票代码，如 "000001"
-            start_date: 开始日期 "YYYYMMDD"
-            end_date: 结束日期 "YYYYMMDD"
-            period: K线周期 "daily"/"weekly"/"monthly"
-            adjust: 复权类型 "qfq"/"hfq"/""
+        获取历史K线数据（带重试和缓存）
         """
+        cache_key = f"kline_{period}_{adjust}"
+        
+        if use_cache:
+            cached_df = self._load_from_cache(stock_code, cache_key)
+            if cached_df is not None:
+                date_col = "日期" if "日期" in cached_df.columns else "date"
+                cached_df = cached_df[
+                    (cached_df[date_col] >= start_date) & 
+                    (cached_df[date_col] <= end_date)
+                ]
+                if len(cached_df) >= 20:
+                    print(f"[Collector] 使用缓存数据: {len(cached_df)} 条")
+                    return cached_df
+        
         print(f"[Collector] 获取K线数据: {stock_code} ({start_date} ~ {end_date})")
-        df = ak.stock_zh_a_hist(
-            symbol=stock_code,
-            period=period,
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust
-        )
-        print(f"[Collector] 获取到 {len(df)} 条K线记录")
-        return df
+        
+        def fetch_data():
+            return ak.stock_zh_a_hist(
+                symbol=stock_code,
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust
+            )
+        
+        try:
+            df = self._retry_request(fetch_data)
+            self._save_to_cache(df, stock_code, cache_key)
+            print(f"[Collector] 获取到 {len(df)} 条K线记录")
+            return df
+        except Exception as e:
+            print(f"[Collector] 网络请求失败，尝试使用缓存...")
+            cached_df = self._load_from_cache(stock_code, cache_key)
+            if cached_df is not None:
+                return cached_df
+            raise e
 
     def get_market_index(
         self,

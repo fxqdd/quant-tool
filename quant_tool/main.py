@@ -7,6 +7,7 @@ A股量化分析工具 - 小白友好版
 
 使用方式：
     python main.py --stock 000001
+    python main.py --stock 000001 --days 7
 """
 
 import sys
@@ -19,6 +20,7 @@ from data.processors.indicator import IndicatorCalculator
 from analyzers.technical_analyzer import TechnicalAnalyzer
 from analyzers.sentiment_analyzer import SentimentAnalyzer
 from backtest.engine import BacktestEngine
+from utils.plotter import TerminalPlotter
 
 
 TERMINOLOGY = {
@@ -158,7 +160,7 @@ def get_simple_verdict(analysis: dict) -> dict:
     return result
 
 
-def analyze_stock(stock_code: str, start_date: str = "20240101", end_date: str = "20260331"):
+def analyze_stock(stock_code: str, start_date: str = "20240101", end_date: str = "20260331", plot_days: int = 30):
     """分析单只股票（小白友好版）"""
     print(f"\n开始分析股票: {stock_code}")
     print("-" * 50)
@@ -322,6 +324,15 @@ def analyze_stock(stock_code: str, start_date: str = "20240101", end_date: str =
     explain_term("顶背离")
     
     print("\n" + "=" * 70)
+    print("📈 价格走势图")
+    print("=" * 70)
+    try:
+        plotter = TerminalPlotter()
+        plotter.plot_all(indicators, stock_code, days=plot_days)
+    except Exception as e:
+        print(f"绘图失败: {e}")
+    
+    print("\n" + "=" * 70)
     print("⚠️  免责声明")
     print("=" * 70)
     print("""
@@ -419,6 +430,8 @@ def main():
     parser.add_argument("--mode", type=str, default="analyze", choices=["analyze", "backtest", "batch"])
     parser.add_argument("--start", type=str, default="20240101", help="开始日期")
     parser.add_argument("--end", type=str, default="20260331", help="结束日期")
+    parser.add_argument("--days", type=int, default=30, help="图表显示天数(默认30天)")
+    parser.add_argument("--noplot", action="store_true", help="不显示图表")
     
     args = parser.parse_args()
     
@@ -430,7 +443,7 @@ def main():
     elif args.mode == "backtest":
         backtest_stock(args.stock, args.start, args.end)
     else:
-        analyze_stock(args.stock, args.start, args.end)
+        analyze_stock(args.stock, args.start, args.end, plot_days=args.days)
 
 
 if __name__ == "__main__":
