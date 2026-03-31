@@ -74,7 +74,10 @@ class TerminalPlotter:
         plt.title(f"{stock_code} 价格与均线")
         plt.xlabel("交易日")
         plt.ylabel("价格")
-        plt.legend(loc="upper left")
+        try:
+            plt.legend()
+        except:
+            pass
         plt.ticks(dtype="string", ticks=5)
         plt.show()
 
