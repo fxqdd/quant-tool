@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import sys
 import os
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -22,6 +23,211 @@ from analyzers.noise_filter import NoiseFilterPipeline
 from backtest.time_locked_backtest import TimeLockedBacktest, MockDataProvider
 
 
+MOCK_KLINE_DATA = {
+    "000001": {
+        "name": "平安银行",
+        "base_price": 8.96,
+        "volatility": 0.02
+    },
+    "600519": {
+        "name": "贵州茅台",
+        "base_price": 1680.0,
+        "volatility": 0.015
+    },
+    "000858": {
+        "name": "五粮液",
+        "base_price": 145.0,
+        "volatility": 0.018
+    }
+}
+
+
+def generate_mock_kline(stock_code: str, days: int = 100) -> pd.DataFrame:
+    """生成模拟K线数据用于演示"""
+    np.random.seed(hash(stock_code) % 2**32)
+    
+    if stock_code in MOCK_KLINE_DATA:
+        config = MOCK_KLINE_DATA[stock_code]
+        base_price = config["base_price"]
+        volatility = config["volatility"]
+    else:
+        base_price = 20.0 + np.random.rand() * 80
+        volatility = 0.02 + np.random.rand() * 0.02
+    
+    dates = pd.date_range(end=datetime.now(), periods=days, freq="D")
+    dates = [d for d in dates if d.weekday() < 5][:days]
+    
+    trend = np.cumsum(np.random.randn(len(dates)) * volatility * base_price)
+    close = base_price + trend * 0.3
+    close = np.maximum(close, base_price * 0.5)
+    
+    df = pd.DataFrame({
+        "日期": [d.strftime("%Y-%m-%d") for d in dates],
+        "开盘": close * (1 + np.random.randn(len(dates)) * 0.005),
+        "最高": close * (1 + np.abs(np.random.randn(len(dates)) * 0.01)),
+        "最低": close * (1 - np.abs(np.random.randn(len(dates)) * 0.01)),
+        "收盘": close,
+        "成交量": np.random.randint(5000000, 50000000, len(dates))
+    })
+    
+    df["开盘"] = df["开盘"].clip(lower=df["最低"] * 0.99, upper=df["最高"] * 1.01)
+    df["收盘"] = df["收盘"].clip(lower=df["最低"] * 0.99, upper=df["最高"] * 1.01)
+    
+    return df
+
+
+INDICATOR_GUIDE = {
+    "RSI": {
+        "name": "RSI 相对强弱指数",
+        "description": "衡量股价涨跌动力的指标，像速度表。数值越高说明涨得越猛，越低说明跌得越凶。",
+        "ranges": {
+            (70, 100): ("超买区", "危险", "涨太多，可能要跌，风险较高"),
+            (30, 70): ("中性区", "正常", "正常波动范围，可继续观察"),
+            (0, 30): ("超卖区", "机会", "跌太多，可能反弹，关注买入机会"),
+        },
+        "interpretation": "RSI > 70 超买，可能回调；RSI < 30 超卖，可能反弹"
+    },
+    "MACD": {
+        "name": "MACD 指数平滑异同",
+        "description": "判断趋势方向的指标，像方向盘。金叉往上开=看涨，死叉往下开=看跌。",
+        "signals": {
+            "多头": ("上涨趋势", " DIF > DEA 且 DIF > 0"),
+            "空头": ("下跌趋势", " DIF < DEA 且 DIF < 0"),
+            "中性": ("盘整", " DIF 接近 DEA"),
+        },
+        "interpretation": "MACD金叉买入，死叉卖出"
+    },
+    "KDJ": {
+        "name": "KDJ 随机指标",
+        "description": "判断超买超卖的指标，像油表。J值 > 100 = 没油了要跌，J值 < 0 = 快没油了要涨。",
+        "ranges": {
+            (80, 100): ("超买区", "危险", "K>80或J>100，涨过头了，注意风险"),
+            (20, 80): ("中性区", "正常", "K在20-80之间，正常范围"),
+            (0, 20): ("超卖区", "机会", "K<20或J<0，跌过头了，可能反弹"),
+        },
+        "interpretation": "KDJ低位金叉买入，高位死叉卖出"
+    },
+    "布林带": {
+        "name": "布林带 (Bollinger Bands)",
+        "description": "像股票的高速公路。上轨=超速要跌，下轨=慢速要涨，中轨=正常行驶。",
+        "ranges": {
+            (80, 100): ("上轨附近", "偏高", "价格触及上轨，可能回调"),
+            (20, 80): ("中轨附近", "正常", "价格在通道内正常波动"),
+            (0, 20): ("下轨附近", "偏低", "价格触及下轨，可能反弹"),
+        },
+        "interpretation": "价格突破上轨卖出，跌破下轨买入"
+    },
+    "量比": {
+        "name": "量比 (Volume Ratio)",
+        "description": "今天的成交量和平时比，像热闹程度。",
+        "ranges": {
+            (2, 100): ("异常放量", "关注", "突然放量，通常有大事发生"),
+            (0.5, 2): ("正常范围", "正常", "正常交易活动"),
+            (0, 0.5): ("缩量", "观望", "交易冷清，可能横盘"),
+        },
+        "interpretation": "量比 > 2 关注放量；量比 < 0.5 观望"
+    },
+    "OBV": {
+        "name": "OBV 能量潮",
+        "description": "累积成交量变化的指标，OBV上升=资金流入，下降=资金流出。",
+        "interpretation": "OBV上升且价格上升=确认上涨；OBV下降且价格上升=顶背离（危险）"
+    },
+    "ATR": {
+        "name": "ATR 平均真实波幅",
+        "description": "衡量股价波动程度的指标，ATR越高=波动越剧烈。用于设置止损。",
+        "interpretation": "ATR用于计算止损幅度，一般设置为止损1-2倍ATR"
+    }
+}
+
+
+def show_indicator_guide():
+    """显示指标解释指南"""
+    st.sidebar.divider()
+    st.sidebar.header("📖 指标解释")
+    
+    with st.sidebar.expander("RSI 相对强弱指数", expanded=False):
+        info = INDICATOR_GUIDE["RSI"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write("**参考区间：**")
+        for (low, high), (zone, status, meaning) in info['ranges'].items():
+            icon = "🔴" if status == "危险" else ("🟢" if status == "机会" else "🟡")
+            st.write(f"{icon} **{low}-{high}** {zone}: {meaning}")
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("MACD 指数平滑异同", expanded=False):
+        info = INDICATOR_GUIDE["MACD"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write("**信号解读：**")
+        for signal, (trend, condition) in info['signals'].items():
+            icon = "🟢" if signal == "多头" else ("🔴" if signal == "空头" else "🟡")
+            st.write(f"{icon} **{signal}**: {trend} ({condition})")
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("KDJ 随机指标", expanded=False):
+        info = INDICATOR_GUIDE["KDJ"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write("**参考区间：**")
+        for (low, high), (zone, status, meaning) in info['ranges'].items():
+            icon = "🔴" if status == "危险" else ("🟢" if status == "机会" else "🟡")
+            st.write(f"{icon} **{low}-{high}** {zone}: {meaning}")
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("布林带", expanded=False):
+        info = INDICATOR_GUIDE["布林带"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write("**价格位置：**")
+        for (low, high), (zone, status, meaning) in info['ranges'].items():
+            icon = "🔴" if status == "偏高" else ("🟢" if status == "偏低" else "🟡")
+            st.write(f"{icon} **{low}-{high}%** {zone}: {meaning}")
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("量比", expanded=False):
+        info = INDICATOR_GUIDE["量比"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write("**参考区间：**")
+        for (low, high), (zone, status, meaning) in info['ranges'].items():
+            icon = "🟡" if status == "正常" else ("🟠" if status == "关注" else "🔵")
+            st.write(f"{icon} **{low}-{high}** {zone}: {meaning}")
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("OBV 能量潮", expanded=False):
+        info = INDICATOR_GUIDE["OBV"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+    
+    with st.sidebar.expander("ATR 平均真实波幅", expanded=False):
+        info = INDICATOR_GUIDE["ATR"]
+        st.write(f"**{info['name']}**")
+        st.write(info['description'])
+        st.write("---")
+        st.write(f"📌 *{info['interpretation']}*")
+
+
+def show_data_source_info(use_cache: bool = False, is_mock: bool = False):
+    """显示数据来源信息"""
+    if is_mock:
+        st.info("当前使用模拟数据（网络不可用）")
+    elif use_cache:
+        st.success("数据来源：缓存数据")
+
+
 st.set_page_config(
     page_title="A股量化分析系统",
     page_icon="📈",
@@ -32,6 +238,8 @@ st.set_page_config(
 def main():
     st.title("📈 A股量化分析系统 v2.0")
     st.markdown("**技术面 + 基本面 + 情绪面 三维度融合分析**")
+    
+    show_indicator_guide()
     
     with st.sidebar:
         st.header("设置")
@@ -63,12 +271,30 @@ def main():
         else:
             with st.spinner("正在获取数据..."):
                 collector = AkShareCollector()
+                kline_df = None
+                use_cache = False
+                is_mock = False
                 
                 try:
                     kline_df = collector.get_historical_kline(stock_code, use_cache=True)
                 except Exception as e:
-                    st.error(f"数据获取失败: {e}")
-                    kline_df = None
+                    error_msg = str(e)
+                    if "RemoteDisconnected" in error_msg or "Connection" in error_msg:
+                        st.warning("网络不可用，使用模拟数据进行演示")
+                        is_mock = True
+                    else:
+                        st.warning(f"数据获取异常: {error_msg[:50]}... 使用模拟数据")
+                        is_mock = True
+                
+                if kline_df is None or len(kline_df) < 20:
+                    if stock_code in MOCK_KLINE_DATA:
+                        stock_name = MOCK_KLINE_DATA[stock_code]["name"]
+                        st.info(f"使用 {stock_name} 的模拟数据进行演示")
+                    else:
+                        st.info(f"使用通用模拟数据进行演示")
+                    kline_df = generate_mock_kline(stock_code, days=100)
+                    is_mock = True
+                    use_cache = False
                 
                 if kline_df is not None and len(kline_df) > 0:
                     indicators = IndicatorCalculator.calculate_all(kline_df)
@@ -86,7 +312,7 @@ def main():
                     mf_result = mf_engine.fuse(
                         tech_result,
                         {"direction": fund_result.overall, "score": fund_result.score},
-                        sent_result
+                        sent_result["score"]
                     )
                     
                     result = {

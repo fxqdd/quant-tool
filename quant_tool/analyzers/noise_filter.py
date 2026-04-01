@@ -234,10 +234,11 @@ class SignalConsistencyChecker:
         根据综合得分和一致性决定最终操作
         Returns: (action, confidence)
         """
-        if not is_consistent:
-            return "观望", 0.0
-        
         confidence = min(abs(score), 1.0)
+        
+        if not is_consistent:
+            confidence = confidence * 0.3
+            return "观望", confidence
         
         if score >= 0.3:
             return "可以考虑买入", confidence
