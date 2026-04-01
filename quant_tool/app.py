@@ -370,18 +370,103 @@ def main():
                     return
         
         if result:
+            mf = result["multi_factor"]
+            tech_signals = convert_technical_signals(result["technical"])
+            
+            tech_score = mf.technical_score
+            fund_score = mf.fundamental_score
+            sent_score = mf.sentiment_score
+            
+            tech_direction = tech_signals.get("direction", "中性")
+            buy_signals = [s for s in tech_signals.get("signals", []) if s.get("type") == "买入"]
+            sell_signals = [s for s in tech_signals.get("signals", []) if s.get("type") == "卖出"]
+            
+            fund_direction = result["fundamental"].overall
+            
+            st.subheader("综合分析结果")
+            
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.metric("推荐操作", result["multi_factor"].action)
+                st.metric("推荐操作", mf.action)
             
             with col2:
-                confidence = result["multi_factor"].confidence
-                st.metric("置信度", f"{confidence:.0%}")
+                st.metric("置信度", f"{mf.confidence:.0%}")
             
             with col3:
-                score = result["multi_factor"].score
-                st.metric("综合评分", f"{score:.3f}")
+                st.metric("综合评分", f"{mf.score:.3f}")
+            
+            with st.expander("📐 查看计算详情", expanded=True):
+                st.markdown("### 计算公式")
+                
+                st.markdown("""
+                **综合评分计算：**
+                ```
+                score = tech_score × 0.4 + fund_score × 0.3 + sent_score × 0.3
+                      = ({:.3f}) × 0.4 + ({:.3f}) × 0.3 + ({:.3f}) × 0.3
+                      = {:.3f}
+                ```
+                """.format(tech_score, fund_score, sent_score, mf.score))
+                
+                st.markdown("""
+                | 维度 | 得分 | 权重 | 贡献 |
+                |------|------|------|------|
+                | 技术面 | {:.3f} | 40% | {:.3f} |
+                | 基本面 | {:.3f} | 30% | {:.3f} |
+                | 情绪面 | {:.3f} | 30% | {:.3f} |
+                """.format(
+                    tech_score, tech_score * 0.4,
+                    fund_score, fund_score * 0.3,
+                    sent_score, sent_score * 0.3
+                ))
+                
+                st.markdown("### 判断逻辑")
+                
+                action_text = ""
+                if mf.action == "可以考虑买入":
+                    action_text = f"""
+                    **买入条件：** score ≥ 0.3 且 信号一致
+                    - 当前 score = {mf.score:.3f} {'≥' if mf.score >= 0.3 else '<'} 0.3 ✓
+                    - 信号一致性：{'一致' if mf.is_consistent else '不一致'}
+                    """
+                elif mf.action == "建议回避":
+                    action_text = f"""
+                    **回避条件：** score ≤ -0.3 且 信号一致
+                    - 当前 score = {mf.score:.3f} {'≤' if mf.score <= -0.3 else '>'} -0.3 ✓
+                    - 信号一致性：{'一致' if mf.is_consistent else '不一致'}
+                    """
+                else:
+                    action_text = f"""
+                    **观望条件：** -0.3 < score < 0.3 或 信号不一致
+                    - 当前 score = {mf.score:.3f} (在观望区间)
+                    - 信号一致性：{'一致' if mf.is_consistent else '不一致'}
+                    """
+                st.markdown(action_text)
+                
+                st.markdown("### 详细原因")
+                
+                reason_parts = []
+                
+                reason_parts.append(f"**技术面 ({tech_direction})**：")
+                reason_parts.append(f"  - 趋势方向: {result['technical'].get('trend', {}).get('trend', 'N/A')}")
+                reason_parts.append(f"  - 买入信号: {len(buy_signals)} 个")
+                for sig in buy_signals:
+                    reason_parts.append(f"    + {sig['reason']} (强度:{sig['strength']})")
+                reason_parts.append(f"  - 卖出信号: {len(sell_signals)} 个")
+                for sig in sell_signals:
+                    reason_parts.append(f"    + {sig['reason']} (强度:{sig['strength']})")
+                
+                reason_parts.append(f"\n**基本面 ({fund_direction})**：")
+                fund = result["fundamental"]
+                reason_parts.append(f"  - 综合评级: {fund.overall}")
+                reason_parts.append(f"  - PE: {fund.details.get('pe', 'N/A')}, PB: {fund.details.get('pb', 'N/A')}")
+                reason_parts.append(f"  - ROE: {fund.details.get('roe', 0):.1f}%")
+                
+                reason_parts.append(f"\n**情绪面**：")
+                reason_parts.append(f"  - 情绪评分: {result['sentiment'].get('score', 0):.2f}")
+                reason_parts.append(f"  - 情绪标签: {result['sentiment'].get('label', '中性')}")
+                
+                st.markdown("\n".join(reason_parts))
             
             st.divider()
             
