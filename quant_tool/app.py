@@ -76,6 +76,44 @@ def generate_mock_kline(stock_code: str, days: int = 100) -> pd.DataFrame:
     return df
 
 
+def convert_technical_signals(tech_result: dict) -> dict:
+    """
+    将 TechnicalAnalyzer 返回的结果转换为 MultiFactorEngine 期望的格式
+    
+    转换逻辑：
+    - direction: 从 trend 获取（上涨/下跌/震荡 -> 偏多/偏空/中性）
+    - score: 综合计算（基于买卖信号数量和强弱）
+    """
+    trend = tech_result.get("trend", {})
+    signals = tech_result.get("signals", [])
+    
+    trend_direction = trend.get("trend", "震荡")
+    if trend_direction == "上涨":
+        direction = "偏多"
+    elif trend_direction == "下跌":
+        direction = "偏空"
+    else:
+        direction = "中性"
+    
+    buy_signals = [s for s in signals if s.get("type") == "买入"]
+    sell_signals = [s for s in signals if s.get("type") == "卖出"]
+    
+    strength_map = {"强": 1.0, "中": 0.5, "弱": 0.25}
+    
+    buy_score = sum(strength_map.get(s.get("strength", "弱"), 0.25) for s in buy_signals)
+    sell_score = sum(strength_map.get(s.get("strength", "弱"), 0.25) for s in sell_signals)
+    
+    score = buy_score - sell_score
+    
+    score = max(-3, min(3, score))
+    
+    return {
+        "direction": direction,
+        "score": score,
+        "signals": signals
+    }
+
+
 INDICATOR_GUIDE = {
     "RSI": {
         "name": "RSI 相对强弱指数",
@@ -306,11 +344,12 @@ def main():
                     fund_analyzer = FundamentalAnalyzer()
                     fund_result = fund_analyzer.analyze(financial_data)
                     
+                    tech_signals = convert_technical_signals(tech_result)
                     sent_result = {"score": 0.2, "label": "轻度看多"}
                     
                     mf_engine = MultiFactorEngine()
                     mf_result = mf_engine.fuse(
-                        tech_result,
+                        tech_signals,
                         {"direction": fund_result.overall, "score": fund_result.score},
                         sent_result["score"]
                     )
