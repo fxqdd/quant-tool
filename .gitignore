@@ -174,3 +174,4 @@
 *.lz
 *.lzma
 *.iso
+quant_tool/data/cache/

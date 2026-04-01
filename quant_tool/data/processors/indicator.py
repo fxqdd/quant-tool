@@ -41,7 +41,11 @@ class IndicatorCalculator:
         avg_loss = loss.rolling(window=period, min_periods=1).mean()
         
         rs = avg_gain / avg_loss
+        rs = rs.replace([np.inf, -np.inf], np.nan)
+        
         rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.fillna(50)
+        rsi = rsi.clip(0, 100)
         
         return rsi
 
