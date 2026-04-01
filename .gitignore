@@ -175,3 +175,7 @@
 *.lzma
 *.iso
 quant_tool/data/cache/
+
+# 预测记录和报告
+quant_tool/data/prediction_records/
+quant_tool/reports/
